@@ -1,0 +1,180 @@
+---
+title: "Instacart Reorder Analysis and Prediction"
+author: Gwyndolyn Bleikamp
+date: 08/01/2017
+output: html_notebook
+---
+
+# Yapyapyap
+
+## Objective
+Instacart would like to be able to predict for the test set (orders.csv)
+
+1. Products that a user will buy again,
+2. Try for the first time, or 
+3. Add to cart next during a session
+
+## Data
+Data is provided open-source online 
+(https://www.instacart.com/datasets/grocery-shopping-2017)
+
+There is also a kaggle competition to enter for a chance to win a prize
+(https://www.kaggle.com/c/instacart-market-basket-analysis/data)
+
+Data provided are for each prior/training/testing sets:  
+* aisle 
+* department (Frozen, Bakery, etc...)
+* product name
+* Indicator for a reordered product
+* Day of week/Time of order
+
+Submission File Format:  
+For each order ID in the test set, provide the following  
+Order ID,Space delimited list of products or the word 'None'   
+17,1 2
+34,None
+...
+
+## Load Necessary Libraries
+```{r, message = FALSE}
+# Necessary Evils
+library(dplyr)
+library(ggplot2)
+library(readr)
+```
+
+
+# Exploratory Data Analysis
+
+## Dimension Level
+
+First read in the data
+```{r}
+
+# Read in dimension level data
+aisles <- read.csv("C:/Users/owner/Documents/Kaggle/Instacart/Instacart_Data/instacart_2017_05_01/aisles.csv",
+                   stringsAsFactors = FALSE)
+depts  <- read.csv("C:/Users/owner/Documents/Kaggle/Instacart/Instacart_Data/instacart_2017_05_01/departments.csv",
+                   stringsAsFactors = FALSE)
+products  <- read.csv("C:/Users/owner/Documents/Kaggle/Instacart/Instacart_Data/instacart_2017_05_01/products.csv",
+                      stringsAsFactors = FALSE)
+
+# Merge in aisle and department descriptions with the product by id
+product_dim <- left_join(products, aisles, by = "aisle_id") %>%
+  left_join(., depts, by = "department_id")
+
+```
+
+Explore a bit with the dimensional data before reading in event level purchases
+```{r}
+str(product_dim)
+```
+
+There are 49,688 distinct products. Now we have aisle and dept mapped in so 
+explore each one at a time to get our feet wet.
+
+### Departments
+
+First look at which departments have the most products
+```{r}
+# Get count by department and produce bar plot sorted
+product_dim %>%
+  group_by(department) %>%
+  summarize(Frequency = length(department)) %>%
+  mutate(department = factor(department, 
+                             levels = unique(department[order(Frequency)]))) %>%
+  
+  ggplot(data = ., aes(x = department, y = Frequency)) + 
+    geom_bar(stat = "identity") + 
+    coord_flip() + 
+    labs(title = "Count of Products within each Department")
+```
+
+Personal care has over 6000 products while < 2,000 different types of produce exist. I could guess there are multiple brands and types of hair spray but there is only one 'lettuce'. Personal care is a bit more broad of a category as well. How many aisles could consititue personal care?
+
+```{r}
+as.matrix(table(product_dim[product_dim$department == "personal care",]$aisle))
+```
+Over 1,000 types of vitamins! Plus over 800 products in 'hair care' aisles 
+across all represented retailers (unknown).
+
+Get a feel for the granularity of the product - Are there more than one hairspray? 
+```{r}
+filter(product_dim, aisle == "hair care" & grepl("spray", product_name))
+```
+
+What about number of times bought. Is the generic "Hairspray" (34192) more
+common since there are only 29 other distinct "hair care" aisle prodcuts 
+with the word 'spray' in the name?
+
+
+How granular do tomatoes get? Cherry/organic/yellow/red/garden/roma/etc...
+```{r}
+filter(product_dim, department == "produce" & grepl("tomato", tolower(product_name)))
+```
+Answer - Very!
+Is there a skew towards generic product name (Tomato)?
+
+## Fact Level: Training Data
+Bring in order training/prior and understand how they work together
+
+```{r}
+# Fact level data:
+# Training Set of orders
+orders_train <- read_csv("C:/Users/owner/Documents/Kaggle/Instacart/Instacart_Data/instacart_2017_05_01/order_products__train.csv")
+```
+
+What does this data look like?
+```{r}
+str(orders_train)
+```
+Join on product id to the product_dim table
+```{r}
+fact_train <- left_join(orders_train,
+                        product_dim,
+                        by = "product_id")
+
+str(fact_train)
+```
+
+How many orders are in the training data?
+```{r}
+length(unique(fact_train$order_id))
+```
+
+What items are most popular?
+```{r}
+
+# How many of the ~50K products are bought in the training set
+length(unique(fact_train$product_name))
+
+# Get a feel for the dist of Frequency
+freq_df <- fact_train %>%
+  group_by(product_name) %>%
+  summarize(Frequency = length(product_name)) %>%
+  mutate(product_name = factor(product_name, 
+                               levels = unique(product_name[order(Frequency)]))) 
+quantile(freq_df$Frequency, c(0, .25, .5, .75, .95, 1))
+hist(freq_df$Frequency)
+
+# Get count of products, ordered by frequency
+# So many to graph them all so just choose the top 20 products
+fact_train %>%
+  group_by(product_name) %>%
+  summarize(Frequency = length(product_name)) %>%
+  mutate(product_name = factor(product_name, 
+                               levels = unique(product_name[order(Frequency)]))) %>% 
+  top_n(20) %>%
+  
+  ggplot(data = ., aes(x = product_name, y = Frequency)) + 
+    geom_bar(stat = "identity") + 
+    coord_flip() + 
+    labs(title = "Top 20 Products bought in the Training set")
+```
+
+Next Steps
+Parse out organic vs not indicator
+Link similar products (Avocado vs Hass Avocado) - Do they mind which is which?
+Perhaps we can upsell to a more expensize avocado.
+Look at the top departments/aisles - The top 20 products all seem to be produce.
+It seems that perhaps our product list is not every product, but rather any product that was bought - Could that introduce bias? We will never recommend products that have never been bought before?
